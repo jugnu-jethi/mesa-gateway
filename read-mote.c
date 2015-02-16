@@ -12,7 +12,7 @@
 #define FALSE 0
 #define TRUE 1
 
-#define TMPCTRVAL 10
+#define TMPCTRVAL 1
   
 int STOP=FALSE; 
   
@@ -22,7 +22,7 @@ volatile sig_atomic_t wait_flag=TRUE;                    /* TRUE while no signal
   
 main()
 {
-  int fd, c, res, writeOctets, tmpctr = TMPCTRVAL, sent = FALSE, totalRead = 0;
+  int fd, c, res, writeOctets, tmpctr = TMPCTRVAL, sent = FALSE, totalRead = 0, totalSent = 0;
   struct termios oldtio,newtio;
   struct sigaction saio;           /* definition of signal action */
   char buf[255];
@@ -64,9 +64,13 @@ main()
     /* after receiving SIGIO, wait_flag = FALSE, input is available
       and can be read */
     if( sent ==  FALSE ){
-      writeOctets = write( fd, wTest, sizeof( wTest ) );
-      printf("sent:%d\n", writeOctets );
-      if( ( --tmpctr ) == 0 ) sent = TRUE;
+      if( -1 == ( writeOctets = write( fd, wTest, sizeof( wTest ) ) ) ){
+	perror( "send-error:" );
+      }else{
+	totalSent += writeOctets;
+	printf("sent:%d\n", writeOctets );
+	if( ( --tmpctr ) == 0 ) sent = TRUE;
+      }
     }
 
     usleep(100000);
@@ -75,7 +79,7 @@ main()
       if( -1 != ( res = read( fd, buf, 255 ) ) ){
 	totalRead += res;
 	buf[res]=0;
-	printf("recvd:%s:%d:%d\n", buf, res, totalRead );
+	printf("recvd:%s:%d:%d:%d\n", buf, res, totalRead, totalSent );
 //      if (res==1) STOP=TRUE; /* stop loop if only a CR was input *
       }
       wait_flag = TRUE;      /* wait for new input */
@@ -102,5 +106,7 @@ void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontex
 //  printf("Got SIGIO : %d, %ld\n", signalinfo->si_code, signalinfo->si_band );
 //   if( signalinfo->si_code == POLL_IN ) printf( "Read now.\n" );
 //   if( signalinfo->si_code == POLL_OUT ) printf( "Send now.\n" );
+  psiginfo( signalinfo, "SIGIO" );
+  psignal( signalnum, "SIGIO" );
   wait_flag = FALSE;
 }

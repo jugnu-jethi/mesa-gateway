@@ -41,8 +41,8 @@ int main( void ){
     exit( EXIT_FAILURE );
   }
 
-    cfsetospeed( &collector_tty_options, B115200 );
-    cfsetispeed( &collector_tty_options, B115200 );
+  cfsetospeed( &collector_tty_options, B115200 );
+  cfsetispeed( &collector_tty_options, B115200 );
     
   if( tcflush( collectorfd, TCIOFLUSH ) < 0 ){
     perror( "flush-collector-IO" );
