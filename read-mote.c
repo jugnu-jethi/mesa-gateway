@@ -1,112 +1,258 @@
-#include <termios.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <termios.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <sys/signal.h>
+#include <sys/stat.h>
 #include <sys/types.h>
-  
+
+#include "ring-buffer.h"
+
+
+
+/* User definitions */
+#define FALSE ( 0 )
+#define TRUE ( unsigned )( !FALSE )
+#define NUL_CHAR '\0'
+
 #define BAUDRATE B38400
-#define MODEMDEVICE "/dev/ttyUSB1"
-#define _POSIX_SOURCE 1 /* POSIX compliant source */
-#define FALSE 0
-#define TRUE 1
+#define COLLECTOR_TTY "/dev/ttyUSB0"
+#define MSCAN_FRAME_MAX_SZ 268
+#define COLLECTOR_BUFFER_SZ ( 1 * MSCAN_FRAME_MAX_SZ )
+#define READ_REQUEST_SZ ( 1/4 * MSCAN_FRAME_MAX_SZ )
+#define READ_RING_BUFFER_SZ ( 10 * MSCAN_FRAME_MAX_SZ )
 
-#define TMPCTRVAL 1
+
+
+/* Function prototypes */
+void sigact_handler_IO( int, siginfo_t *, void * );
+
+
+
+/* Global variables */
+unsigned int HALT = FALSE;
+volatile sig_atomic_t readFlag = FALSE;
+
+
+
+int main( void ){
   
-int STOP=FALSE; 
+  int collectorfd = -1;
+  unsigned int writeOctets = 0, readOctets = 0, HALT = FALSE, tmpctr;
+  char collectorbuffer[ COLLECTOR_BUFFER_SZ ];
+  ElemType serialReadData = { 0, NULL }, bufferReadData = { 0, NULL };
+  RingBuffer collectorReadRB;
   
-// void signal_handler_IO( int status );   /* definition of signal handler */
-void sigact_handler_IO( int, siginfo_t *, void * );   /* definition of sigaction-signal handler */
-volatile sig_atomic_t wait_flag=TRUE;                    /* TRUE while no signal received */
+  struct sigaction signal_IO_options;
+  struct termios collector_tty_options, prev_tty_options;
   
-main()
-{
-  int fd, c, res, writeOctets, tmpctr = TMPCTRVAL, sent = FALSE, totalRead = 0, totalSent = 0;
-  struct termios oldtio,newtio;
-  struct sigaction saio;           /* definition of signal action */
-  char buf[255];
-  const char wTest[] = "TESTING ONE TWO THREE FOUR FIVE SIX SEVEN EIGHT NINE TEN";
+  /* all variables init to known state i.e. zero, etc */ 
+  memset( &collector_tty_options, 0, sizeof( collector_tty_options ) );
+  memset( &prev_tty_options, 0, sizeof( collector_tty_options ) );
+  memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
   
-  /* open the device to be non-blocking (read will return immediatly) */
-  fd = open(MODEMDEVICE, O_RDWR | O_NOCTTY | O_NONBLOCK);
-  if (fd <0) {perror(MODEMDEVICE); exit(-1); }
+  /* initialise a receive ring buffer */
+  rbInit( &collectorReadRB, READ_RING_BUFFER_SZ );
   
+  /* should we use raw mode i.e. cfmakeraw()? */
+  /* vmin==0; vtime==0;; read() returns bytes requested or lesser */
+  collector_tty_options.c_cc[ VMIN ] = 0;
+  collector_tty_options.c_cc[ VTIME ] = 0;
+  collector_tty_options.c_cflag = BAUDRATE | CS8 | CLOCAL | CREAD;
+  collector_tty_options.c_iflag = 0;
+  /* raw input mode */
+  collector_tty_options.c_lflag &= ~( ICANON | ECHO | ECHOE | ISIG );
+  /* raw output mode */
+  collector_tty_options.c_oflag &= ~OPOST;
+
   /* install the signal handler before making the device asynchronous */
-//   saio.sa_handler = signal_handler_IO;
-  saio.sa_sigaction = sigact_handler_IO;
-  sigemptyset(&saio.sa_mask);
-  saio.sa_flags = SA_SIGINFO;
-  saio.sa_restorer = NULL;
-  sigaction( SIGIO, &saio, NULL );
-    
-  /* allow the process to receive SIGIO */
-  fcntl(fd, F_SETOWN, getpid());
-  /* Make the file descriptor asynchronous (the manual page says only 
-    O_APPEND and O_NONBLOCK, will work with F_SETFL...) */
-  fcntl(fd, F_SETFL, FASYNC);
+  signal_IO_options.sa_sigaction = sigact_handler_IO;
+  sigemptyset(&signal_IO_options.sa_mask);
+  signal_IO_options.sa_flags = SA_SIGINFO | SA_RESTART;
+  signal_IO_options.sa_restorer = NULL;
+  sigaction( SIGIO, &signal_IO_options, NULL );
   
-  tcgetattr(fd,&oldtio); /* save current port settings */
-  /* set new port settings for canonical input processing */
-  newtio.c_cflag = BAUDRATE | CS8 | CLOCAL | CREAD;
-  newtio.c_iflag = 0;
-  newtio.c_oflag &= ~OPOST; // raw output mode
-  newtio.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG); // raw input mode
-  newtio.c_cc[ VMIN ]=0;
-  newtio.c_cc[ VTIME ]=0;
-  tcflush( fd, TCIFLUSH );
-  tcsetattr( fd,TCSANOW,&newtio );
-  
-  /* loop while waiting for input. normally we would do something
-    useful here */ 
-  while( STOP == FALSE ){
-    printf(".\n");
-    /* after receiving SIGIO, wait_flag = FALSE, input is available
-      and can be read */
-    if( sent ==  FALSE ){
-      if( -1 == ( writeOctets = write( fd, wTest, sizeof( wTest ) ) ) ){
-	perror( "send-error:" );
-      }else{
-	totalSent += writeOctets;
-	printf("sent:%d\n", writeOctets );
-	if( ( --tmpctr ) == 0 ) sent = TRUE;
-      }
-    }
-
-    usleep(100000);
+  /* open collector serial port with exit error prompt */
+  collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK );
+  if( 0 > collectorfd ){
     
-    if( wait_flag == FALSE ){ 
-      if( -1 != ( res = read( fd, buf, 255 ) ) ){
-	totalRead += res;
-	buf[res]=0;
-	printf("recvd:%s:%d:%d:%d\n", buf, res, totalRead, totalSent );
-//      if (res==1) STOP=TRUE; /* stop loop if only a CR was input *
-      }
-      wait_flag = TRUE;      /* wait for new input */
-    }
+    perror( "open-collector" ); 
+    exit( EXIT_FAILURE );
+    
   }
-  /* restore old port settings */
-  tcsetattr(fd,TCSANOW,&oldtio);
-}
   
-/***************************************************************************
-* signal handler. sets wait_flag to FALSE, to indicate above loop that     *
-* characters have been received.                                           *
-***************************************************************************/
+  /* save previous tty option for the collector device */
+  if( 0 > tcgetattr( collectorfd, &prev_tty_options ) ){
+    
+    perror( "get-prev-tty-options" );
+    
+    if( close( collectorfd ) < 0 ){
+      
+      perror( "close-collector" );
+      
+    }
+    
+    exit( EXIT_FAILURE );
+    
+  }
   
-// void signal_handler_IO( int status )
-// {
-//   printf("received SIGIO signal.\n");
-//   wait_flag = FALSE;
-// }
+  /* allow the process to receive SIGIO */
+  if( 0 > fcntl( collectorfd, F_SETOWN, getpid() ) ){
+    
+    perror( "set-recv-sigio" );
+    
+    if( 0 > close( collectorfd ) ){
+      
+      perror( "close-collector" ); 
+      
+    }
+    
+    exit( EXIT_FAILURE );
+    
+  }
+  
+  /* Make the file descriptor asynchronous */
+  if( 0 > fcntl( collectorfd, F_SETFL, FASYNC ) ){
+    
+    perror( "set-async-descriptor" );
+    
+    if( 0 > close( collectorfd ) ){
+      
+      perror( "close-collector" ); 
+      
+    }
+    
+    exit( EXIT_FAILURE );
+    
+  }
+  
+  /* init new collector tty options, flush prior */
+  if( 0 > tcflush( collectorfd, TCIOFLUSH ) ){
+    
+    perror( "flush-collector-IO" );
+    
+  }
+  
+  if( 0 > tcsetattr( collectorfd, TCSANOW, &collector_tty_options ) ){
+    
+    perror( "set-collector-tty-options" );
+    
+    if( 0 > close( collectorfd ) ){
+      
+      perror( "close-collector" ); 
+      
+    }
+    
+    exit( EXIT_FAILURE );
+    
+  }
+  
+  /* start main program loop */
+  while( FALSE == HALT ){
 
-void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontext )
-{
-  /* printf() is UNSAFE; NOT one of async-signal-safe functions */
-//  printf("Got SIGIO : %d, %ld\n", signalinfo->si_code, signalinfo->si_band );
-//   if( signalinfo->si_code == POLL_IN ) printf( "Read now.\n" );
-//   if( signalinfo->si_code == POLL_OUT ) printf( "Send now.\n" );
-  psiginfo( signalinfo, "SIGIO" );
-  psignal( signalnum, "SIGIO" );
-  wait_flag = FALSE;
+    if( TRUE == readFlag ){
+      
+      /* receive from collector tty */
+      if( 0 > ( readOctets = read( collectorfd, collectorbuffer, READ_REQUEST_SZ ) ) ){
+        
+	perror( "read-error" );
+        
+      }
+      
+      if( 0 < readOctets ){
+        
+	printf( "read %d bytes - ", readOctets );
+        
+	for( tmpctr = 0; tmpctr < readOctets; tmpctr++ ){
+          
+	  printf( "%x", collectorbuffer[ tmpctr ] );
+          
+	}
+	
+	/* store read collector data into ring buffer */
+	serialReadData.data = ( unsigned char * )calloc( readOctets, sizeof( unsigned char ) );
+        if( NULL != serialReadData.data ){
+          
+          if( serialReadData.data == memcpy( serialReadData.data, collectorbuffer, readOctets ) ){
+            
+            serialReadData.size = readOctets;
+            rbWrite( &collectorReadRB, &serialReadData );
+            
+          }else{
+            
+            perror( "serial-data-copy-error" );
+            
+          }
+
+        }else{
+          perror( "ring-buffer-calloc-error" );
+        }
+        
+        /* read and print stored ring buffer data */
+        if( !rbIsEmpty( &collectorReadRB ) ){
+          
+          printf( " - " );
+          rbRead( &collectorReadRB, &bufferReadData );
+          for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
+          
+          printf( "%x", bufferReadData.data[ tmpctr ] );
+          
+          }
+          
+        }
+        
+        if( 0 != memcmp( serialReadData.data, bufferReadData.data, sizeof( serialReadData.data ) ) ){
+          
+          printf( " - NOK!" );
+          
+        }else{
+          
+          printf( " - OK!" );
+          
+        }
+        
+                printf( "\n" );
+        
+        /* reinitialise variables and free allocations for next iteration use */
+	readOctets = 0;
+	memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
+        free( serialReadData.data );
+        serialReadData.size = 0;
+        
+      }
+
+      readFlag = FALSE;
+    }
+    
+  }
+  
+  /* restore previous collector tty options */
+  if( tcsetattr( collectorfd, TCSANOW, &prev_tty_options ) < 0 ){
+    
+    perror( "restore-collector-tty-options" );
+    
+  }
+
+  /* close collector serial port with exit error prompt */
+  if( close( collectorfd ) < 0 ){
+    
+    perror( "close-collector" ); 
+    exit( EXIT_FAILURE );
+    
+  }
+  
+  return EXIT_SUCCESS;
+}
+
+
+
+/* SIGIO sigaction based signal handler */
+void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontext ){
+  
+  /* psiginfo() & psignal are UNSAFE; NOT one of async-signal-safe functions */
+//   psiginfo( signalinfo, "SIGIO" );
+  readFlag = TRUE;
+  
 }
