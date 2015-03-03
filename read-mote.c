@@ -21,7 +21,7 @@
 #define COLLECTOR_TTY "/dev/ttyUSB0"
 #define MSCAN_FRAME_MAX_SZ 268
 #define COLLECTOR_BUFFER_SZ ( 1 * MSCAN_FRAME_MAX_SZ )
-#define READ_REQUEST_SZ ( 1/4 * MSCAN_FRAME_MAX_SZ )
+#define READ_REQUEST_SZ ( 0.25 * MSCAN_FRAME_MAX_SZ )
 #define READ_RING_BUFFER_SZ ( 10 * MSCAN_FRAME_MAX_SZ )
 
 
@@ -197,7 +197,7 @@ int main( void ){
           rbRead( &collectorReadRB, &bufferReadData );
           for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
           
-          printf( "%x", bufferReadData.data[ tmpctr ] );
+            printf( "%x", bufferReadData.data[ tmpctr ] );
           
           }
           
@@ -213,7 +213,7 @@ int main( void ){
           
         }
         
-                printf( "\n" );
+        printf( "\n" );
         
         /* reinitialise variables and free allocations for next iteration use */
 	readOctets = 0;
