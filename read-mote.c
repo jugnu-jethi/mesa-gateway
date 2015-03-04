@@ -154,25 +154,12 @@ int main( void ){
 
     if( TRUE == readFlag ){
       
-      /* receive from collector tty */
-      if( 0 > ( readOctets = read( collectorfd, collectorbuffer, READ_REQUEST_SZ ) ) ){
+      /* recurse read from collector tty */
+      while( 0 < ( readOctets = read( collectorfd, collectorbuffer, READ_REQUEST_SZ ) ) ){
         
-	perror( "read-error" );
+        /* store read collector data into ring buffer */
+        serialReadData.data = ( unsigned char * )calloc( readOctets, sizeof( unsigned char ) );
         
-      }
-      
-      if( 0 < readOctets ){
-        
-	printf( "read %d bytes - ", readOctets );
-        
-	for( tmpctr = 0; tmpctr < readOctets; tmpctr++ ){
-          
-	  printf( "%x", collectorbuffer[ tmpctr ] );
-          
-	}
-	
-	/* store read collector data into ring buffer */
-	serialReadData.data = ( unsigned char * )calloc( readOctets, sizeof( unsigned char ) );
         if( NULL != serialReadData.data ){
           
           if( serialReadData.data == memcpy( serialReadData.data, collectorbuffer, readOctets ) ){
@@ -185,45 +172,57 @@ int main( void ){
             perror( "serial-data-copy-error" );
             
           }
-
+          
         }else{
+          
           perror( "ring-buffer-calloc-error" );
-        }
-        
-        /* read and print stored ring buffer data */
-        if( !rbIsEmpty( &collectorReadRB ) ){
-          
-          printf( " - " );
-          rbRead( &collectorReadRB, &bufferReadData );
-          for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
-          
-            printf( "%x", bufferReadData.data[ tmpctr ] );
-          
-          }
           
         }
         
-        if( 0 != memcmp( serialReadData.data, bufferReadData.data, sizeof( serialReadData.data ) ) ){
+        /* print in char/hex current set collector rx bytes */
+        printf( "read %d bytes - ", readOctets );
+        
+        for( tmpctr = 0; tmpctr < readOctets; tmpctr++ ){
           
-          printf( " - NOK!" );
-          
-        }else{
-          
-          printf( " - OK!" );
+          printf( "%c", collectorbuffer[ tmpctr ] );
           
         }
-        
-        printf( "\n" );
         
         /* reinitialise variables and free allocations for next iteration use */
-	readOctets = 0;
-	memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
+        readOctets = 0;
+        memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
         free( serialReadData.data );
         serialReadData.size = 0;
         
       }
+        
+//       /* read and print stored ring buffer data */
+//       if( !rbIsEmpty( &collectorReadRB ) ){
+//         
+//         printf( " - " );
+//         rbRead( &collectorReadRB, &bufferReadData );
+//         for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
+//         
+//           printf( "%x", bufferReadData.data[ tmpctr ] );
+//         
+//         }
+//         
+//       }
+//       
+//       if( 0 != memcmp( serialReadData.data, bufferReadData.data, sizeof( serialReadData.data ) ) ){
+//         
+//         printf( " - NOK!" );
+//         
+//       }else{
+//         
+//         printf( " - OK!" );
+//         
+//       }
+/*      
+      printf( "\n" );*/
 
       readFlag = FALSE;
+      
     }
     
   }
