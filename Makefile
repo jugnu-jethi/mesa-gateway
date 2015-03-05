@@ -1,5 +1,7 @@
 IDIR =.
+ifeq ($(CC),)
 CC=gcc
+endif
 CFLAGS=-g -I$(IDIR)
 
 ODIR=.
@@ -18,7 +20,7 @@ $(ODIR)/%.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
 
 read-mote: $(OBJ)
-	gcc -o $@ $^ $(CFLAGS) $(LIBS)
+	$(CC) -o $@ $^ $(CFLAGS) $(LIBS)
 
 .PHONY: clean
 
