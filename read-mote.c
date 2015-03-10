@@ -56,14 +56,15 @@ int main( void ){
   /* initialise a receive ring buffer */
   rbInit( &collectorReadRB, READ_RING_BUFFER_SZ );
   
-  /* should we use raw mode i.e. cfmakeraw()? */
   /* vmin==0; vtime==0;; read() returns bytes requested or lesser */
   collector_tty_options.c_cc[ VMIN ] = 0;
   collector_tty_options.c_cc[ VTIME ] = 0;
-  collector_tty_options.c_cflag = BAUDRATE | CS8 | CLOCAL | CREAD;
-  collector_tty_options.c_iflag = 0;
+  collector_tty_options.c_cflag &= ~( CSIZE | PARENB );
+  collector_tty_options.c_cflag |= BAUDRATE | CS8 | CLOCAL | CREAD;
+  collector_tty_options.c_iflag &= ~( IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | IXON );
+  collector_tty_options.c_iflag |= ICRNL;
   /* raw input mode */
-  collector_tty_options.c_lflag &= ~( ICANON | ECHO | ECHOE | ISIG );
+  collector_tty_options.c_lflag &= ~( ECHO | ECHONL | ICANON | ISIG | IEXTEN );
   /* raw output mode */
   collector_tty_options.c_oflag &= ~OPOST;
 
@@ -98,6 +99,28 @@ int main( void ){
     
   }
   
+   /* flush all buffered io data */
+  if( 0 > tcflush( collectorfd, TCIOFLUSH ) ){
+    
+    perror( "flush-collector-IO" );
+    
+  }
+  
+  /* init new collector tty options */
+  if( 0 > tcsetattr( collectorfd, TCSANOW, &collector_tty_options ) ){
+    
+    perror( "set-collector-tty-options" );
+    
+    if( 0 > close( collectorfd ) ){
+      
+      perror( "close-collector" ); 
+      
+    }
+    
+    exit( EXIT_FAILURE );
+    
+  }
+  
   /* allow the process to receive SIGIO */
   if( 0 > fcntl( collectorfd, F_SETOWN, getpid() ) ){
     
@@ -114,30 +137,10 @@ int main( void ){
   }
   
   /* Make the file descriptor asynchronous */
+  /* At success, SIGIO signal handler will trigger onwards */
   if( 0 > fcntl( collectorfd, F_SETFL, FASYNC ) ){
     
     perror( "set-async-descriptor" );
-    
-    if( 0 > close( collectorfd ) ){
-      
-      perror( "close-collector" ); 
-      
-    }
-    
-    exit( EXIT_FAILURE );
-    
-  }
-  
-  /* init new collector tty options, flush prior */
-  if( 0 > tcflush( collectorfd, TCIOFLUSH ) ){
-    
-    perror( "flush-collector-IO" );
-    
-  }
-  
-  if( 0 > tcsetattr( collectorfd, TCSANOW, &collector_tty_options ) ){
-    
-    perror( "set-collector-tty-options" );
     
     if( 0 > close( collectorfd ) ){
       
@@ -187,7 +190,9 @@ int main( void ){
           }
 
         }else{
+          
           perror( "ring-buffer-calloc-error" );
+          
         }
         
         /* read and print stored ring buffer data */
@@ -195,6 +200,7 @@ int main( void ){
           
           printf( " - " );
           rbRead( &collectorReadRB, &bufferReadData );
+          
           for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
           
             printf( "%x", bufferReadData.data[ tmpctr ] );
