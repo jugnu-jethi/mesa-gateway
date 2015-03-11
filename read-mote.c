@@ -229,6 +229,7 @@ int main( void ){
         
       }
 
+      /* Potential race conditon */
       readFlag = FALSE;
     }
     
