@@ -27,13 +27,14 @@
 
 
 /* Function prototypes */
-void sigact_handler_IO( int, siginfo_t *, void * );
+// void sigact_handler_IO( int, siginfo_t *, void * );
 
 
 
 /* Global variables */
 unsigned int HALT = FALSE;
-volatile sig_atomic_t readFlag = FALSE;
+// volatile sig_atomic_t readFlag = FALSE;
+volatile sig_atomic_t readFlag = TRUE;
 
 
 
@@ -57,7 +58,7 @@ int main( void ){
   rbInit( &collectorReadRB, READ_RING_BUFFER_SZ );
   
   /* vmin==0; vtime==0;; read() returns bytes requested or lesser */
-  collector_tty_options.c_cc[ VMIN ] = 0;
+  collector_tty_options.c_cc[ VMIN ] = 1;
   collector_tty_options.c_cc[ VTIME ] = 0;
   collector_tty_options.c_cflag &= ~( CSIZE | PARENB );
   collector_tty_options.c_cflag |= BAUDRATE | CS8 | CLOCAL | CREAD;
@@ -68,15 +69,16 @@ int main( void ){
   /* raw output mode */
   collector_tty_options.c_oflag &= ~OPOST;
 
-  /* install the signal handler before making the device asynchronous */
-  signal_IO_options.sa_sigaction = sigact_handler_IO;
-  sigemptyset(&signal_IO_options.sa_mask);
-  signal_IO_options.sa_flags = SA_SIGINFO | SA_RESTART;
-  signal_IO_options.sa_restorer = NULL;
-  sigaction( SIGIO, &signal_IO_options, NULL );
+//   /* install the signal handler before making the device asynchronous */
+//   signal_IO_options.sa_sigaction = sigact_handler_IO;
+//   sigemptyset(&signal_IO_options.sa_mask);
+//   signal_IO_options.sa_flags = SA_SIGINFO | SA_RESTART;
+//   signal_IO_options.sa_restorer = NULL;
+//   sigaction( SIGIO, &signal_IO_options, NULL );
   
   /* open collector serial port with exit error prompt */
-  collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK );
+//   collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK );
+  collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY );
   if( 0 > collectorfd ){
     
     perror( "open-collector" ); 
@@ -121,36 +123,36 @@ int main( void ){
     
   }
   
-  /* allow the process to receive SIGIO */
-  if( 0 > fcntl( collectorfd, F_SETOWN, getpid() ) ){
-    
-    perror( "set-recv-sigio" );
-    
-    if( 0 > close( collectorfd ) ){
-      
-      perror( "close-collector" ); 
-      
-    }
-    
-    exit( EXIT_FAILURE );
-    
-  }
+//   /* allow the process to receive SIGIO */
+//   if( 0 > fcntl( collectorfd, F_SETOWN, getpid() ) ){
+//     
+//     perror( "set-recv-sigio" );
+//     
+//     if( 0 > close( collectorfd ) ){
+//       
+//       perror( "close-collector" ); 
+//       
+//     }
+//     
+//     exit( EXIT_FAILURE );
+//     
+//   }
   
-  /* Make the file descriptor asynchronous */
-  /* At success, SIGIO signal handler will trigger onwards */
-  if( 0 > fcntl( collectorfd, F_SETFL, FASYNC ) ){
-    
-    perror( "set-async-descriptor" );
-    
-    if( 0 > close( collectorfd ) ){
-      
-      perror( "close-collector" ); 
-      
-    }
-    
-    exit( EXIT_FAILURE );
-    
-  }
+//   /* Make the file descriptor asynchronous */
+//   /* At success, SIGIO signal handler will trigger onwards */
+//   if( 0 > fcntl( collectorfd, F_SETFL, FASYNC ) ){
+//     
+//     perror( "set-async-descriptor" );
+//     
+//     if( 0 > close( collectorfd ) ){
+//       
+//       perror( "close-collector" ); 
+//       
+//     }
+//     
+//     exit( EXIT_FAILURE );
+//     
+//   }
   
   /* start main program loop */
   while( FALSE == HALT ){
@@ -229,8 +231,8 @@ int main( void ){
         
       }
 
-      /* Potential race conditon */
-      readFlag = FALSE;
+//       /* Potential race conditon */
+//       readFlag = FALSE;
     }
     
   }
@@ -255,11 +257,11 @@ int main( void ){
 
 
 
-/* SIGIO sigaction based signal handler */
-void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontext ){
-  
-  /* psiginfo() & psignal are UNSAFE; NOT one of async-signal-safe functions */
-//   psiginfo( signalinfo, "SIGIO" );
-  readFlag = TRUE;
-  
-}
+// /* SIGIO sigaction based signal handler */
+// void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontext ){
+//   
+//   /* psiginfo() & psignal are UNSAFE; NOT one of async-signal-safe functions */
+// //   psiginfo( signalinfo, "SIGIO" );
+//   readFlag = TRUE;
+//   
+// }
