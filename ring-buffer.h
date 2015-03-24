@@ -6,8 +6,7 @@
 /* Opaque buffer element type */
 typedef struct {
   
-  unsigned size;
-  unsigned char *data;
+  unsigned char data;
   
 } ElemType;
 

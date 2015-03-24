@@ -1,10 +1,11 @@
 #include <fcntl.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
-#include <sys/signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -27,25 +28,27 @@
 
 
 /* Function prototypes */
-void sigact_handler_IO( int, siginfo_t *, void * );
+void * readRxRingBuffer( void * );
 
 
 
 /* Global variables */
 unsigned int HALT = FALSE;
-volatile sig_atomic_t readFlag = FALSE;
+RingBuffer collectorReadRB;
+ElemType serialReadData, bufferReadData;
+pthread_mutex_t RxRBmutex;
+sem_t RxRBCount;
 
 
 
 int main( void ){
   
   int collectorfd = -1;
-  unsigned int writeOctets = 0, readOctets = 0, HALT = FALSE, tmpctr;
+  unsigned int writeOctets = 0, readOctets = 0, tmpctr;
   char collectorbuffer[ COLLECTOR_BUFFER_SZ ];
-  ElemType serialReadData = { 0, NULL }, bufferReadData = { 0, NULL };
-  RingBuffer collectorReadRB;
+  pthread_attr_t tmpattr;
+  pthread_t readRxRBTh;
   
-  struct sigaction signal_IO_options;
   struct termios collector_tty_options, prev_tty_options;
   
   /* all variables init to known state i.e. zero, etc */ 
@@ -53,11 +56,18 @@ int main( void ){
   memset( &prev_tty_options, 0, sizeof( collector_tty_options ) );
   memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
   
-  /* initialise a receive ring buffer */
-  rbInit( &collectorReadRB, READ_RING_BUFFER_SZ );
+  /* init RxRB mutex */
+  pthread_mutex_init( &RxRBmutex, NULL );
   
+  /* initialise RxRB semaphore */
+  sem_init( &RxRBCount, 0, 0 );
+  
+  /* initialise a receive ring buffer */
+  rbInit( &collectorReadRB, READ_RING_BUFFER_SZ );  
+  
+  /* raw mode, non-canonical processing */
   /* vmin==0; vtime==0;; read() returns bytes requested or lesser */
-  collector_tty_options.c_cc[ VMIN ] = 0;
+  collector_tty_options.c_cc[ VMIN ] = 1;
   collector_tty_options.c_cc[ VTIME ] = 0;
   collector_tty_options.c_cflag &= ~( CSIZE | PARENB );
   collector_tty_options.c_cflag |= BAUDRATE | CS8 | CLOCAL | CREAD;
@@ -67,16 +77,9 @@ int main( void ){
   collector_tty_options.c_lflag &= ~( ECHO | ECHONL | ICANON | ISIG | IEXTEN );
   /* raw output mode */
   collector_tty_options.c_oflag &= ~OPOST;
-
-  /* install the signal handler before making the device asynchronous */
-  signal_IO_options.sa_sigaction = sigact_handler_IO;
-  sigemptyset(&signal_IO_options.sa_mask);
-  signal_IO_options.sa_flags = SA_SIGINFO | SA_RESTART;
-  signal_IO_options.sa_restorer = NULL;
-  sigaction( SIGIO, &signal_IO_options, NULL );
   
   /* open collector serial port with exit error prompt */
-  collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY | O_NONBLOCK );
+  collectorfd = open( COLLECTOR_TTY, O_RDWR | O_NOCTTY );
   if( 0 > collectorfd ){
     
     perror( "open-collector" ); 
@@ -121,26 +124,12 @@ int main( void ){
     
   }
   
-  /* allow the process to receive SIGIO */
-  if( 0 > fcntl( collectorfd, F_SETOWN, getpid() ) ){
+  /* Create a detached state thread and clean-up thread attrib after */
+  pthread_attr_init( &tmpattr );
+  pthread_attr_setdetachstate( &tmpattr, PTHREAD_CREATE_DETACHED );
+  if( 0 != pthread_create( &readRxRBTh, &tmpattr, readRxRingBuffer, NULL ) ){
     
-    perror( "set-recv-sigio" );
-    
-    if( 0 > close( collectorfd ) ){
-      
-      perror( "close-collector" ); 
-      
-    }
-    
-    exit( EXIT_FAILURE );
-    
-  }
-  
-  /* Make the file descriptor asynchronous */
-  /* At success, SIGIO signal handler will trigger onwards */
-  if( 0 > fcntl( collectorfd, F_SETFL, FASYNC ) ){
-    
-    perror( "set-async-descriptor" );
+    perror( "ring-buffer-read-thread-create-error" );
     
     if( 0 > close( collectorfd ) ){
       
@@ -151,86 +140,65 @@ int main( void ){
     exit( EXIT_FAILURE );
     
   }
+  pthread_attr_destroy( &tmpattr );
   
   /* start main program loop */
   while( FALSE == HALT ){
-
-    if( TRUE == readFlag ){
+    
+    /* receive from collector tty */
+    if( 0 > ( readOctets = read( collectorfd, collectorbuffer, READ_REQUEST_SZ ) ) ){
       
-      /* receive from collector tty */
-      if( 0 > ( readOctets = read( collectorfd, collectorbuffer, READ_REQUEST_SZ ) ) ){
+      perror( "read-error" );
+      
+    }
+    
+    /* store read collector data into ring buffer */
+    if( 0 < readOctets ){
+      
+      printf( "read-tty: %dB - ", readOctets );
+      
+      /* Lock RxRB for writing */
+      pthread_mutex_lock( &RxRBmutex ); 
         
-	perror( "read-error" );
+      for( tmpctr = 0; tmpctr < readOctets; tmpctr++ ){
+        
+        printf( "%x", collectorbuffer[ tmpctr ] );
+        serialReadData.data = collectorbuffer[ tmpctr ];
+        rbWrite( &collectorReadRB, &serialReadData );
+//         printf( "Serial-data-stored.\n" );
+        
+        /* Increment semaphore to indicate data availability */
+        sem_post( &RxRBCount );
         
       }
       
-      if( 0 < readOctets ){
+      /* Unlock RxRB after writing */
+      pthread_mutex_unlock( &RxRBmutex );
         
-	printf( "read %d bytes - ", readOctets );
+      printf( "\n" );
+      
+//       /* Lock RxRB for reading */
+//       pthread_mutex_lock( &RxRBmutex );
+//       
+//       /* read and print stored ring buffer data */
+//       while( !rbIsEmpty( &collectorReadRB ) ){
+//         
+//         printf( "read-buffer: " );
+//         
+//         rbRead( &collectorReadRB, &bufferReadData );
+//         printf( "%x", bufferReadData.data );
+//         
+//       }
+//       
+//       printf( "\n" );
+//       
+//       /* Unlock RxRB after writing */
+//       pthread_mutex_unlock( &RxRBmutex );
         
-	for( tmpctr = 0; tmpctr < readOctets; tmpctr++ ){
-          
-	  printf( "%x", collectorbuffer[ tmpctr ] );
-          
-	}
-	
-	/* store read collector data into ring buffer */
-	serialReadData.data = ( unsigned char * )calloc( readOctets, sizeof( unsigned char ) );
-        if( NULL != serialReadData.data ){
-          
-          if( serialReadData.data == memcpy( serialReadData.data, collectorbuffer, readOctets ) ){
-            
-            serialReadData.size = readOctets;
-            rbWrite( &collectorReadRB, &serialReadData );
-            
-          }else{
-            
-            perror( "serial-data-copy-error" );
-            
-          }
-
-        }else{
-          
-          perror( "ring-buffer-calloc-error" );
-          
-        }
-        
-        /* read and print stored ring buffer data */
-        if( !rbIsEmpty( &collectorReadRB ) ){
-          
-          printf( " - " );
-          rbRead( &collectorReadRB, &bufferReadData );
-          
-          for( tmpctr = 0; tmpctr < bufferReadData.size; tmpctr++ ){
-          
-            printf( "%x", bufferReadData.data[ tmpctr ] );
-          
-          }
-          
-        }
-        
-        if( 0 != memcmp( serialReadData.data, bufferReadData.data, sizeof( serialReadData.data ) ) ){
-          
-          printf( " - NOK!" );
-          
-        }else{
-          
-          printf( " - OK!" );
-          
-        }
-        
-        printf( "\n" );
-        
-        /* reinitialise variables and free allocations for next iteration use */
-	readOctets = 0;
-	memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
-        free( serialReadData.data );
-        serialReadData.size = 0;
-        
-      }
-
-      /* Potential race conditon */
-      readFlag = FALSE;
+      /* reinitialise variables and free allocations for next iteration use */
+      readOctets = 0;
+      memset( collectorbuffer, NUL_CHAR, sizeof( collectorbuffer ) );
+      
     }
     
   }
@@ -251,15 +219,52 @@ int main( void ){
   }
   
   return EXIT_SUCCESS;
-}
-
-
-
-/* SIGIO sigaction based signal handler */
-void sigact_handler_IO( int signalnum, siginfo_t *signalinfo, void *signalcontext ){
-  
-  /* psiginfo() & psignal are UNSAFE; NOT one of async-signal-safe functions */
-//   psiginfo( signalinfo, "SIGIO" );
-  readFlag = TRUE;
   
 }
+
+
+
+void * readRxRingBuffer( void *threadArg ){
+  
+  unsigned int printctr, retvar;
+  
+  
+  
+  while( 1 ){
+    
+    /* Wait for data to become available */
+    sem_wait( &RxRBCount );
+    
+    if( 0 == sem_getvalue( &RxRBCount, &retvar ) ){
+      
+      printf( "Semaphore-value: %d\n", retvar );
+      
+    }else{
+      
+      perror( "semaphore-error" );
+      
+    }
+    
+    /* Lock RxRB for reading */
+      pthread_mutex_lock( &RxRBmutex );
+      
+      
+      printf( "read-buffer: " );
+      
+      /* read and print stored ring buffer data */
+      if( !rbIsEmpty( &collectorReadRB ) ){
+        
+        rbRead( &collectorReadRB, &bufferReadData );
+        printf( "%x", bufferReadData.data );
+        
+      }
+      
+      printf( "\n" );
+      
+      /* Unlock RxRB after writing */
+      pthread_mutex_unlock( &RxRBmutex );
+
+  }
+
+}
+  
