@@ -2,7 +2,7 @@ IDIR =.
 ifeq ($(CC),)
 CC=gcc
 endif
-CFLAGS=-g -I$(IDIR)
+CFLAGS+=-g -I$(IDIR) -pthread
 
 ODIR=.
 LDIR =.
@@ -26,4 +26,4 @@ read-mote: $(OBJ)
 
 clean:
 	rm -f $(ODIR)/*.o *~ core $(INCDIR)/*~ 
-	
+        
